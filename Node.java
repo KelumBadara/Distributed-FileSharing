@@ -8,6 +8,8 @@ import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.StringTokenizer;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
 
 public class Node {
 
@@ -15,18 +17,28 @@ public class Node {
 	private int port;
 	private String username;
 
-	private DatagramSocket sock;
+	private DatagramSocket receiveSock;
+	private DatagramSocket sendSock;
 
 	private int serverPort;
 	private InetAddress serverAddress;
 
 	private List<String> files;
 	private ArrayList<Neighbour> neighbourTable;
+	private BlockingQueue<DatagramPacket> messagesQueue;
+	private Thread listeningThread;
+	private Thread executionThread;
+	
+	private boolean stop;
+	
 
 	public Node(String ip, int port, String username, List<String> files, int serverPort, String sAddress) {
 
 		try {
-			sock = new DatagramSocket(port);
+			stop = false;
+			receiveSock = new DatagramSocket(port);
+			sendSock = new DatagramSocket(port+1);
+			messagesQueue = new LinkedBlockingQueue<DatagramPacket>();
 
 			this.ip = ip;
 			this.port = port;
@@ -35,215 +47,230 @@ public class Node {
 			this.serverPort = serverPort;
 			this.serverAddress = InetAddress.getByName(sAddress);
 			neighbourTable = new ArrayList<Neighbour>();
-
-			String regResponse = reg();
-			echo(regResponse);
 			
-			String[] regResponseval = regResponse.split(" ");
-			String noOfNodes = regResponseval[2];
-
-			if (noOfNodes.equals("0")) {
-
-			} 
-			else if (noOfNodes.equals("1")) {
-				String neighbourIp = regResponseval[3];
-				int neighbourPort = Integer.parseInt(regResponseval[4]);
+			listeningThread = new Thread(new Runnable() {
 				
-				String joinResponse = this.join(neighbourIp, neighbourPort);
-				String[] joinResVal = joinResponse.split(" ");
-				if(joinResVal[2].equals("0")){
-					Neighbour neighbour = new Neighbour(neighbourIp, neighbourPort, joinResVal[3]);
-					neighbourTable.add(neighbour);
-				}
-				
-			} else if (noOfNodes.equals("2")) {
-				String neighbourIp = regResponseval[3];
-				int neighbourPort = Integer.parseInt(regResponseval[4]);
-				
-				String joinResponse = this.join(neighbourIp, neighbourPort);
-				String[] joinResVal = joinResponse.split(" ");
-				if(joinResVal[2].equals("0")){
-					Neighbour neighbour = new Neighbour(neighbourIp, neighbourPort, joinResVal[3]);
-					neighbourTable.add(neighbour);
-				}
-				
-				neighbourIp = regResponseval[5];
-				neighbourPort = Integer.parseInt(regResponseval[6]);
-				
-				String joinResponse2 = this.join(neighbourIp, neighbourPort);
-				String[] joinResVal2 = joinResponse2.split(" ");
-				if(joinResVal2[2].equals("0")){
-					Neighbour neighbour = new Neighbour(neighbourIp, neighbourPort, joinResVal[3]);
-					neighbourTable.add(neighbour);
-				}
-			}
-
-		} catch (UnknownHostException e) {
-			// TODO Auto-generated catch block
-			e.printStackTrace();
-
-		} catch (SocketException e1) {
-			// TODO Auto-generated catch block
-			e1.printStackTrace();
-		} catch (IOException e) {
-			// TODO Auto-generated catch block
-			e.printStackTrace();
-		}
-
-		Thread thread = new Thread(new Runnable() {
-
-			@Override
-			public void run() {
-				// TODO Auto-generated method stub
-				while (true) {
-
-					byte[] buffer = new byte[65536];
-					DatagramPacket incoming = new DatagramPacket(buffer, buffer.length);
-					try {
-						sock.receive(incoming);
-					} catch (IOException e) {
-						// TODO Auto-generated catch block
-						e.printStackTrace();
-					}
-
-					byte[] data = incoming.getData();
-					String s = new String(data, 0, incoming.getLength());
-
-					// echo the details of incoming data - client ip : client
-					// port - client message
-					//echo(incoming.getAddress().getHostAddress() + " : " + incoming.getPort() + " - " + s);
-
-					String[] values = s.split(" ");
-					String command = values[1];
-
-					switch (command) {
-
-						case "JOIN":
-							Neighbour neighbour = new Neighbour(values[2], Integer.parseInt(values[3]), Integer.parseInt(values[4]));
-							neighbourTable.add(neighbour);
-							int value = 0;// change response by changing this variable
-	
-							String join_reply = "JOINOK " + value + " " + neighbourTable.size();
-	
-							int length = join_reply.length() + 5;
-	
-							join_reply = String.format("%04d", length) + " " + join_reply;
-							DatagramPacket joinReply = new DatagramPacket(join_reply.getBytes(), join_reply.getBytes().length,
-									incoming.getAddress(), incoming.getPort());
-							
-							
-							try {
-								sock.send(joinReply);
-							} catch (IOException e) {
-								// TODO Auto-generated catch block
-								e.printStackTrace();
-							}
-	
-							break;
-							
-						case "LEAVE":
-							for(Neighbour neighbour_leave: neighbourTable){
-								if(neighbour_leave.getIp().equals(values[2])){
-									neighbourTable.remove(neighbour_leave);
-								}
-							}
-							
-							int value_leave = 0;// change response by changing this variable
-							
-							String leave_reply = "LEAVEOK " + value_leave;
-	
-							int length_leave = leave_reply.length() + 5;
-	
-							leave_reply = String.format("%04d", length_leave) + " " + leave_reply;
-							DatagramPacket leaveReply = new DatagramPacket(leave_reply.getBytes(), leave_reply.getBytes().length,
-									incoming.getAddress(), incoming.getPort());
-							
-							try {
-								sock.send(leaveReply);
-							} catch (IOException e) {
-								// TODO Auto-generated catch block
-								e.printStackTrace();
-							}
-							break;
+				@Override
+				public void run() {
+					while(!stop){
+						byte[] buffer = new byte[65536];
+						DatagramPacket incoming = new DatagramPacket(buffer, buffer.length);
+						try {
+							receiveSock.receive(incoming);
+						} catch (IOException e) {
+							e.printStackTrace();
+						}
 						
-						case "SER" :
-							String query = values[4];
-							query = query.toLowerCase();
-							String[] words = query.split(" ");
-							
-							ArrayList<String> resultFiles = new ArrayList<String>();
-							for(String file: files){
-								file = file.toLowerCase();
-								String[] words2 = file.split(" ");
-								for(String word: words2){
-									if(word.equals(words[0])){
-										resultFiles.add(file);
-									}
-								}
-							}
-							
-							if(resultFiles.size() > 0){
-								String search_reply = "SEROK " + resultFiles.size() + " " + ip + " " + port + " " + (values[5]+1);
-								for(String fileName: files){
-									search_reply += (" " + fileName); 
-								}
-								
-								int length_search = search_reply.length() + 5;
-		
-								search_reply = String.format("%04d", length_search) + " " + search_reply;
-								
-								try {
-									DatagramPacket searchReply = new DatagramPacket(search_reply.getBytes(), search_reply.getBytes().length,
-										InetAddress.getByName(values[2]), Integer.parseInt(values[3]));
-								
-									sock.send(searchReply);
-								} catch (IOException e) {
-									// TODO Auto-generated catch block
-									e.printStackTrace();
-								}
-							}
-							
-							else{
-								for(Neighbour neighbour3: neighbourTable){
-									String search_request = "SER " + values[2] + " " + values[3] + " " + values[4] + " " + (values[5] + 1);
-									int length_search = search_request.length() + 5;
+						try {
+							messagesQueue.put(incoming);
+						} catch (InterruptedException e) {
+							e.printStackTrace();
+						}
+					}
+				}
+			});
 
-									search_request = String.format("%04d", length_search) + " " + search_request;
+			executionThread = new Thread(new Runnable() {
 
+				@Override
+				public void run() {
+					
+					while (!stop) {
+						
+						DatagramPacket incoming = null;
+						try {
+							incoming = messagesQueue.take();
+						} catch (InterruptedException e1) {
+							// TODO Auto-generated catch block
+							e1.printStackTrace();
+						}
+						
+						byte[] data = incoming.getData();
+						String s = new String(data, 0, incoming.getLength());
+
+						String[] values = s.split(" ");
+						String command = values[1];
+
+						switch (command) {
+							
+							case "REGOK":
+								String noOfNodes = values[2];
+								
+								if (noOfNodes.equals("0")) {
+								} 
+								else if (noOfNodes.equals("1")) {
+									String neighbourIp = values[3];
+									int neighbourPort = Integer.parseInt(values[4]);
+									String join_request = "JOIN " + ip + " " + port+ " " + neighbourTable.size();
 									try {
-										DatagramPacket searchRequest = new DatagramPacket(search_request.getBytes(), search_request.getBytes().length,
-												InetAddress.getByName(neighbour3.getIp()), neighbour3.getPort());
-										sock.send(searchRequest);
+										sendMsg(join_request, InetAddress.getByName(neighbourIp), neighbourPort);
 									} catch (UnknownHostException e) {
 										// TODO Auto-generated catch block
 										e.printStackTrace();
-									} catch (IOException e) {
+									}				
+								} 
+								else if (noOfNodes.equals("2")) {
+									String neighbourIp = values[3];
+									int neighbourPort = Integer.parseInt(values[4]);
+									
+									String join_request = "JOIN " + ip + " " + port + " " + neighbourTable.size();
+									try {
+										sendMsg(join_request, InetAddress.getByName(neighbourIp), neighbourPort);
+									} catch (UnknownHostException e) {
 										// TODO Auto-generated catch block
 										e.printStackTrace();
 									}
 									
+									neighbourIp = values[5];
+									neighbourPort = Integer.parseInt(values[6]);
+			
+									try {
+										sendMsg(join_request, InetAddress.getByName(neighbourIp), neighbourPort);
+									} catch (UnknownHostException e) {
+										// TODO Auto-generated catch block
+										e.printStackTrace();
+									}
 								}
-							}
-							break;
+								else{
+									
+								}
+								break;	
+
+							case "JOIN":
+								int value;
+								if(neighbourTable.size() < 4){
+									Neighbour neighbour = new Neighbour(values[2], Integer.parseInt(values[3]), Integer.parseInt(values[4]));
+									neighbourTable.add(neighbour);
+									value = 0;
+								}
+								else{
+									value = 9999;
+								}
+		
+								String join_reply = "JOINOK " + value + " " + neighbourTable.size() + " " + port;
+								sendMsg(join_reply, incoming.getAddress(), Integer.parseInt(values[3]));
+								break;
 							
-						case "SEROK":
-							String response = "File found, no of hops = " + values[5] + " ip = " + values[3] + " port = " + values[4];
+							case "JOINOK":
+								if(values[2].equals("0")){
+									Neighbour neighbour = new Neighbour(incoming.getAddress().getHostName(), Integer.parseInt(values[4]), values[3]);
+									neighbourTable.add(neighbour);
+								}
+								break;
+								
+							case "LEAVE":
+								for(Neighbour neighbour_leave: neighbourTable){
+									if(neighbour_leave.getIp().equals(values[2])){
+										neighbourTable.remove(neighbour_leave);
+									}
+								}
+								
+								int value_leave = 0;// change response by changing this variable
+								
+								String leave_reply = "LEAVEOK " + value_leave;
+								sendMsg(leave_reply, incoming.getAddress(), Integer.parseInt(values[3]));
+								break;
+								
+							case "LEAVEOK":
+								if(values[2].equals("0")){
+									unreg();
+								}
+								break;
+								
+							case "UNROK":
+								if(values[2].equals("0")){
+									stopNode();
+								}
+								break;
 							
-							System.out.println(response);
-	
+							case "SER" :
+								Integer noHops = Integer.parseInt(values[5]);
+								
+								if((values[2].equals(ip) && port == Integer.parseInt(values[3])) || noHops > 5){
+									//System.out.println("No of hops exceeded");
+								}
+								else{
+									String query = values[4];
+									query = query.toLowerCase();
+									String[] words = query.split("_");
+									
+									ArrayList<String> resultFiles = new ArrayList<String>();
+									for(String file: files){
+										file = file.toLowerCase();
+										String[] words2 = file.split(" ");
+										for(String word: words2){
+											if(word.equals(words[0])){
+												resultFiles.add(file);
+											}
+										}
+									}
+									
+									if(resultFiles.size() > 0){
+										String search_reply = "SEROK " + resultFiles.size() + " " + ip + " " + port + " " + (noHops+1);
+										for(String fileName: resultFiles){
+											search_reply += (" " + fileName); 
+										}
+										
+										try {
+											sendMsg(search_reply, InetAddress.getByName(values[2]), Integer.parseInt(values[3]));
+										} catch (NumberFormatException e) {
+											e.printStackTrace();
+										} catch (UnknownHostException e) {
+											e.printStackTrace();
+										}
+									}
+									
+									else{
+										
+										for(Neighbour neighbour: neighbourTable){
+											String search_request = "SER " + values[2] + " " + values[3] + " " + values[4] + " " + (noHops + 1);
+											try {
+						
+												sendMsg(search_request, InetAddress.getByName(neighbour.getIp()), neighbour.getPort());
+											} catch (UnknownHostException e) {
+												e.printStackTrace();
+											}
+											
+										}
+									}
+								}
+								break;
+								
+							case "SEROK":
+								String response = "File found, ip = "+ values[3] + ", port = "+ values[4] + ", no of hops = " + values[5] + ", files = ";
+								for(int i=6;i<values.length;i++){
+									response += (values[i]+", ");
+								}								
+								System.out.println(response);
+								break;
+		
+						}
+						
 					}
 
 				}
+			});
+			
+			listeningThread.start();
+			executionThread.start();
+			
+			reg();
+			
+			
 
-			}
-		});
-		thread.start();
+		} catch (UnknownHostException e) {
+			e.printStackTrace();
+
+		} catch (SocketException e1) {
+			e1.printStackTrace();
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+		
 
 	}
 	
-	public String reg(){
-		
-		String response = null;
+	public void reg(){
 		
 		try{
 			String init_request = "REG " + ip + " " + port + " " + username;
@@ -251,111 +278,41 @@ public class Node {
 			init_request = String.format("%04d", length) + " " + init_request;
 			DatagramPacket regrequest = new DatagramPacket(init_request.getBytes(), init_request.getBytes().length,
 					serverAddress, serverPort);
-			sock.send(regrequest);
-			
-			//below code is to receive the response from bootstrap server
-			
-			byte[] buffer = new byte[65536];
-			DatagramPacket incoming = new DatagramPacket(buffer, buffer.length);
-			
-			sock.receive(incoming);
-			byte[] data = incoming.getData();
-			response = new String(data, 0, incoming.getLength());
+			receiveSock.send(regrequest);
 			
 		}
 		catch (SocketException e1) {
-			// TODO Auto-generated catch block
 			e1.printStackTrace();
 		} catch (IOException e) {
-			// TODO Auto-generated catch block
 			e.printStackTrace();
 		}
 		
-		return response;		
 	}
 	
 	
 	public void unreg() {
-
-		String response = null;
 		
 		try {
 			String unreg_request = "UNREG " + ip + " " + port + " " + username;
-
 			int length = unreg_request.length() + 5;
-
 			unreg_request = String.format("%04d", length) + " " + unreg_request;
 
 			DatagramPacket unregrequest = new DatagramPacket(unreg_request.getBytes(), unreg_request.getBytes().length,
 					serverAddress, serverPort);
-			sock.send(unregrequest);
-			
-			
-			//below code is to receive the response from bootstrap server
-			
-			byte[] buffer = new byte[65536];
-			DatagramPacket incoming = new DatagramPacket(buffer, buffer.length);
-			
-			sock.receive(incoming);
-			byte[] data = incoming.getData();
-			response = new String(data, 0, incoming.getLength());
+			receiveSock.send(unregrequest);
 
 		} catch (UnknownHostException e) {
-			// TODO Auto-generated catch block
 			e.printStackTrace();
-
 		} catch (SocketException e1) {
-			// TODO Auto-generated catch block
 			e1.printStackTrace();
 		} catch (IOException e) {
-			// TODO Auto-generated catch block
 			e.printStackTrace();
 		}
 
 	}
 
-	public String join(String neighbourIp, int neighbourPort) {
-
-		String response = null;
-		
-		try {
-			String join_request = "JOIN " + ip + " " + port+ " " + neighbourTable.size();
-
-			int length = join_request.length() + 5;
-
-			join_request = String.format("%04d", length) + " " + join_request;
-
-			DatagramPacket joinRequest = new DatagramPacket(join_request.getBytes(), join_request.getBytes().length,
-					InetAddress.getByName(neighbourIp), neighbourPort);
-			sock.send(joinRequest);
-			
-			//below code is to receive the response from bootstrap server
-			
-			byte[] buffer = new byte[65536];
-			DatagramPacket incoming = new DatagramPacket(buffer, buffer.length);
-			
-			sock.receive(incoming);
-			byte[] data = incoming.getData();
-			response = new String(data, 0, incoming.getLength());
-
-
-		} catch (UnknownHostException e) {
-			// TODO Auto-generated catch block
-			e.printStackTrace();
-
-		} catch (SocketException e1) {
-			// TODO Auto-generated catch block
-			e1.printStackTrace();
-		} catch (IOException e) {
-			// TODO Auto-generated catch block
-			e.printStackTrace();
-		}
-
-		return response;
-	}
 	
 	public void leave() {
-		
 		try {
 			for(Neighbour neighbour: neighbourTable){
 				String leave_request = "LEAVE " + ip + " " + port;
@@ -366,22 +323,18 @@ public class Node {
 
 				DatagramPacket leaveRequest = new DatagramPacket(leave_request.getBytes(), leave_request.getBytes().length,
 						InetAddress.getByName(neighbour.getIp()), neighbour.getPort());
-				sock.send(leaveRequest);
+				sendSock.send(leaveRequest);
 				
 			}
 
-
 		} catch (UnknownHostException e) {
-			// TODO Auto-generated catch block
 			e.printStackTrace();
 
 		} catch (SocketException e1) {
-			// TODO Auto-generated catch block
 			e1.printStackTrace();
 		} catch (IOException e) {
-			// TODO Auto-generated catch block
 			e.printStackTrace();
-		}	
+		} 
 
 	}
 	
@@ -389,7 +342,7 @@ public class Node {
 		
 		String response = null;
 		query = query.toLowerCase();
-		String[] words = query.split(" ");
+		String[] words = query.split("_");
 		
 		ArrayList<String> resultFiles = new ArrayList<String>();
 		for(String file: files){
@@ -403,29 +356,21 @@ public class Node {
 		}
 		
 		if(resultFiles.size() > 0){
-			response = "File found in first node, no of hops = 1";
+			response = "File found in first node, ip = "+ ip + ", port = "+ port + " no of hops = 1, files = ";
 			for(String fileName: resultFiles){
-				response += (" " + fileName);
+				response += (fileName+", ");
 			}
 			System.out.println(response);
 		}
 		
 		else{
-			for(Neighbour neighbour3: neighbourTable){
+			for(Neighbour neighbour: neighbourTable){
 				String search_request = "SER " + ip + " " + port + " " + query + " " + 1;
 				int length_search = search_request.length() + 5;
 
-				search_request = String.format("%04d", length_search) + " " + search_request;
-
 				try {
-					DatagramPacket searchRequest = new DatagramPacket(search_request.getBytes(), search_request.getBytes().length,
-							InetAddress.getByName(neighbour3.getIp()), neighbour3.getPort());
-					sock.send(searchRequest);
+					sendMsg(search_request, InetAddress.getByName(neighbour.getIp()), neighbour.getPort());
 				} catch (UnknownHostException e) {
-					// TODO Auto-generated catch block
-					e.printStackTrace();
-				} catch (IOException e) {
-					// TODO Auto-generated catch block
 					e.printStackTrace();
 				}
 				
@@ -434,10 +379,34 @@ public class Node {
 
 	}
 	
+	public void sendMsg(String request,InetAddress receiverIp, int receiverPort){
+		
+		int length = request.length() + 5;
+		request = String.format("%04d", length) + " " + request;
+		DatagramPacket regrequest;
+		try {
+			regrequest = new DatagramPacket(request.getBytes(), request.getBytes().length, receiverIp, receiverPort);
+			sendSock.send(regrequest);
+		} catch (IOException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		} 
+		
+		//System.out.println("send message "+ request);
+		
+	}
 	
 	public void echoFiles() {
+		System.out.println("Files in this node: ");
 		for(String fileName: files){
 			System.out.println(fileName + " ");
+		}
+	}
+	
+	public void echoNeighbours() {
+		System.out.println("Neighbours of this node: ");
+		for(Neighbour neighbour: neighbourTable){
+			System.out.println(neighbour.getIp()+ " " + neighbour.getPort() + neighbour.getUsername() + neighbour.getNoOfPeers());
 		}
 	}
 
@@ -445,5 +414,9 @@ public class Node {
 	public static void echo(String msg) {
 		System.out.println(msg);
 	}
-
+	
+	public void stopNode() {
+		stop = true;
+	}
+	
 }
