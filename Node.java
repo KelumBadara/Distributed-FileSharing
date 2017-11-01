@@ -263,9 +263,7 @@ public class Node {
 
 		} catch (SocketException e1) {
 			e1.printStackTrace();
-		} catch (IOException e) {
-			e.printStackTrace();
-		}
+		} 
 		
 
 	}
